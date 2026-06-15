@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+# выгруженные данные (могут быть гигантскими)
+*.1cdata
+out/

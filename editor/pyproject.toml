@@ -1,0 +1,16 @@
+[project]
+name = "onec-schema-editor"
+version = "0.1.0"
+description = "GUI-редактор схемы метаданных 1С (.1cmeta, NDJSON)"
+requires-python = ">=3.10"
+dependencies = ["PySide6>=6.5"]
+
+[project.scripts]
+onec-schema-editor = "onec_schema_editor.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
