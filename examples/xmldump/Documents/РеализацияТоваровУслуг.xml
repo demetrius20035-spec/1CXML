@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Document uuid="00000000-0000-0000-0000-000000000020">
+    <Properties>
+      <Name>РеализацияТоваровУслуг</Name>
+      <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Реализация товаров и услуг</v8:content></v8:item></Synonym>
+      <NumberLength>11</NumberLength>
+      <NumberType>String</NumberType>
+    </Properties>
+    <ChildObjects>
+      <Attribute>
+        <Properties>
+          <Name>Организация</Name>
+          <Type><v8:Type>cfg:CatalogRef.Организации</v8:Type></Type>
+        </Properties>
+      </Attribute>
+      <Attribute>
+        <Properties>
+          <Name>Контрагент</Name>
+          <Type><v8:Type>cfg:CatalogRef.Контрагенты</v8:Type></Type>
+        </Properties>
+      </Attribute>
+      <TabularSection>
+        <Properties>
+          <Name>Товары</Name>
+        </Properties>
+        <ChildObjects>
+          <Attribute>
+            <Properties>
+              <Name>Номенклатура</Name>
+              <Type><v8:Type>cfg:CatalogRef.Номенклатура</v8:Type></Type>
+            </Properties>
+          </Attribute>
+          <Attribute>
+            <Properties>
+              <Name>Количество</Name>
+              <Type>
+                <v8:Type>xs:decimal</v8:Type>
+                <v8:NumberQualifiers>
+                  <v8:Digits>15</v8:Digits>
+                  <v8:FractionDigits>3</v8:FractionDigits>
+                  <v8:AllowedSign>Any</v8:AllowedSign>
+                </v8:NumberQualifiers>
+              </Type>
+            </Properties>
+          </Attribute>
+          <Attribute>
+            <Properties>
+              <Name>Цена</Name>
+              <Type>
+                <v8:Type>xs:decimal</v8:Type>
+                <v8:NumberQualifiers>
+                  <v8:Digits>15</v8:Digits>
+                  <v8:FractionDigits>2</v8:FractionDigits>
+                  <v8:AllowedSign>Any</v8:AllowedSign>
+                </v8:NumberQualifiers>
+              </Type>
+            </Properties>
+          </Attribute>
+        </ChildObjects>
+      </TabularSection>
+    </ChildObjects>
+  </Document>
+</MetaDataObject>

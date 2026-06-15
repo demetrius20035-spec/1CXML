@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Enum uuid="00000000-0000-0000-0000-000000000030">
+    <Properties>
+      <Name>СтавкиНДС</Name>
+      <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Ставки НДС</v8:content></v8:item></Synonym>
+    </Properties>
+    <ChildObjects>
+      <EnumValue>
+        <Properties>
+          <Name>БезНДС</Name>
+          <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Без НДС</v8:content></v8:item></Synonym>
+        </Properties>
+      </EnumValue>
+      <EnumValue>
+        <Properties>
+          <Name>НДС20</Name>
+          <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>НДС 20%</v8:content></v8:item></Synonym>
+        </Properties>
+      </EnumValue>
+    </ChildObjects>
+  </Enum>
+</MetaDataObject>

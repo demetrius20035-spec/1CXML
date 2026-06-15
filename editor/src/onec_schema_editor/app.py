@@ -8,19 +8,26 @@ from typing import Optional
 from PySide6.QtCore import Qt, QSortFilterProxyModel
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDockWidget, QFileDialog, QFormLayout,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
-    QPlainTextEdit, QProgressDialog, QPushButton, QTableWidget, QTableWidgetItem,
-    QTreeView, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QDockWidget, QFileDialog,
+    QFormLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+    QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressDialog,
+    QPushButton, QTableWidget, QTableWidgetItem, QTreeView, QVBoxLayout, QWidget,
 )
 
+from . import estimate as estimate_mod
+from . import exporters, importers, profiles, validate
+from .datafile import summarize
+from .diff import diff_schemas
 from .dialogs import DryOutDialog, TypeEditorDialog
 from .model import DATA_BEARING_KINDS, KIND_TITLES, Schema, SchemaNode, types_label
 from .operations import (
     SearchOptions, compute_statistics, dryout_keep_subset, dryout_split,
     find_matches, replace_in_nodes,
 )
+from .sqlgen import DDLOptions, generate_ddl
 from .tree_model import COL_FULLNAME, COL_NAME, SchemaTreeModel
+from .ui_extra import DataViewerDialog, DiffDialog, GraphDialog
+from .ui_integrations import IntegrationsDialog
 
 
 class MainWindow(QMainWindow):
@@ -33,12 +40,14 @@ class MainWindow(QMainWindow):
         self.model = SchemaTreeModel(self.schema, self)
         self._matches: list[SchemaNode] = []
         self._match_pos = -1
+        self.ddl_opts = DDLOptions()
 
         self._build_tree()
         self._build_detail_dock()
         self._build_search_dock()
         self._build_stats_dock()
         self._build_actions()
+        self._build_menu()
         self._update_title()
         self._refresh_status()
 
@@ -184,6 +193,187 @@ class MainWindow(QMainWindow):
         act("Высушить тип", self._dryout, "Ctrl+D")
         act("Редактировать тип", self._edit_type, "Ctrl+T")
         act("Удалить узел", self._delete_node, "Del")
+
+    def _build_menu(self) -> None:
+        bar = self.menuBar()
+
+        m_file = bar.addMenu("Файл")
+        m_file.addAction("Открыть схему…", self.open_file)
+        m_file.addAction("Импорт из Configuration.xml…", self._import_xml)
+        m_file.addSeparator()
+        m_file.addAction("Сохранить", self.save_file)
+        m_file.addAction("Сохранить как…", self.save_file_as)
+
+        m_prof = bar.addMenu("Профиль")
+        m_prof.addAction("Сохранить профиль…", self._save_profile)
+        m_prof.addAction("Применить профиль…", self._apply_profile)
+
+        m_an = bar.addMenu("Анализ")
+        m_an.addAction("Сравнить со схемой… (diff)", self._diff_with)
+        m_an.addAction("Проверить ссылочную целостность", self._validate)
+        m_an.addAction("Граф связей объектов", self._show_graph)
+        m_an.addAction("Оценка объёмов…", self._estimate)
+        m_an.addAction("Просмотр данных .1cdata…", self._view_data)
+
+        m_exp = bar.addMenu("Экспорт")
+        m_exp.addAction("Паспорт для LLM (Markdown)…", lambda: self._export_passport("md"))
+        m_exp.addAction("Паспорт для LLM (JSON)…", lambda: self._export_passport("json"))
+        m_exp.addSeparator()
+        m_exp.addAction("DDL: MariaDB…", lambda: self._generate_ddl("mariadb"))
+        m_exp.addAction("DDL: ClickHouse…", lambda: self._generate_ddl("clickhouse"))
+        m_exp.addAction("DDL: YDB…", lambda: self._generate_ddl("ydb"))
+
+        m_int = bar.addMenu("Интеграции")
+        m_int.addAction("СУБД и Yandex Cloud…", self._open_integrations)
+
+        m_set = bar.addMenu("Настройки SQL")
+        self.act_translit = QAction("Транслитерация имён", self, checkable=True)
+        self.act_translit.setChecked(self.ddl_opts.transliterate)
+        self.act_translit.toggled.connect(
+            lambda v: setattr(self.ddl_opts, "transliterate", v))
+        m_set.addAction(self.act_translit)
+        self.act_pres = QAction("Колонки представлений ссылок (_view)", self, checkable=True)
+        self.act_pres.setChecked(self.ddl_opts.include_presentation)
+        self.act_pres.toggled.connect(
+            lambda v: setattr(self.ddl_opts, "include_presentation", v))
+        m_set.addAction(self.act_pres)
+        m_set.addAction("Имя базы данных…", self._set_database)
+
+    # -------------------------------------------------- новые обработчики
+    def _import_xml(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self, "Каталог XML-выгрузки конфигурации (с Configuration.xml)")
+        if not path:
+            return
+        try:
+            schema = importers.import_configuration(path)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Ошибка импорта", str(exc))
+            return
+        self.schema = schema
+        self.model.set_schema(schema)
+        self.tree.expandToDepth(1)
+        self._update_title()
+        self._refresh_status()
+        self._refresh_stats()
+        QMessageBox.information(self, "Импорт",
+                                f"Импортировано узлов: {len(schema.nodes_by_id)}")
+
+    def _save_profile(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить профиль", "",
+                                              "Профиль (*.json)")
+        if not path:
+            return
+        name, _ = QInputDialog.getText(self, "Профиль", "Имя профиля:")
+        profiles.save_profile(self.schema, path, name=name or "",
+                              settings={"ddl": vars(self.ddl_opts)})
+        self.statusBar().showMessage(f"Профиль сохранён: {path}", 4000)
+
+    def _apply_profile(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Применить профиль", "",
+                                              "Профиль (*.json)")
+        if not path:
+            return
+        prof = profiles.load_profile(path)
+        changed, missing = profiles.apply_profile(self.schema, prof)
+        self.model.set_schema(self.schema)
+        self.tree.expandToDepth(1)
+        self._refresh_status()
+        QMessageBox.information(self, "Профиль применён",
+                                f"Изменено галок: {changed}\nНе найдено в схеме: {missing}")
+
+    def _diff_with(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Схема для сравнения", "",
+                                              "Схема 1С (*.1cmeta)")
+        if not path:
+            return
+        other = Schema.load(path)
+        result = diff_schemas(other, self.schema)
+        DiffDialog(result, self).exec()
+
+    def _validate(self) -> None:
+        report = validate.validate_schema(self.schema)
+        lines = [report.summary(), ""]
+        for issue in report.errors + report.warnings:
+            mark = "❌" if issue.severity == "error" else "⚠️"
+            lines.append(f"{mark} {issue.path}: {issue.message}")
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Ссылочная целостность")
+        dlg.resize(760, 520)
+        lay = QVBoxLayout(dlg)
+        text = QPlainTextEdit("\n".join(lines))
+        text.setReadOnly(True)
+        lay.addWidget(text)
+        dlg.exec()
+
+    def _show_graph(self) -> None:
+        GraphDialog(self.schema, self).exec()
+
+    def _estimate(self) -> None:
+        summary = None
+        if QMessageBox.question(
+                self, "Оценка объёмов",
+                "Подгрузить файл .1cdata для точного числа строк?\n"
+                "(Нет — оценка только по ширине строк схемы)") == QMessageBox.Yes:
+            path, _ = QFileDialog.getOpenFileName(self, "Файл данных", "",
+                                                  "Данные 1С (*.1cdata)")
+            if path:
+                summary = summarize(path)
+        rows = estimate_mod.estimate(self.schema, self.ddl_opts, summary)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Оценка объёмов")
+        dlg.resize(760, 520)
+        lay = QVBoxLayout(dlg)
+        table = QTableWidget(len(rows), 4)
+        table.setHorizontalHeaderLabels(["Объект", "Колонок", "Строк", "≈ Размер"])
+        total = 0
+        for i, e in enumerate(rows):
+            table.setItem(i, 0, QTableWidgetItem(e.full_name))
+            table.setItem(i, 1, QTableWidgetItem(str(e.columns)))
+            table.setItem(i, 2, QTableWidgetItem(str(e.rows)))
+            table.setItem(i, 3, QTableWidgetItem(estimate_mod.human_size(e.est_bytes)))
+            total += e.est_bytes
+        table.resizeColumnsToContents()
+        lay.addWidget(QLabel(f"Итого ≈ {estimate_mod.human_size(total)}"))
+        lay.addWidget(table)
+        dlg.exec()
+
+    def _view_data(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Файл данных .1cdata", "",
+                                              "Данные 1С (*.1cdata)")
+        if path:
+            DataViewerDialog(path, self).exec()
+
+    def _export_passport(self, fmt: str) -> None:
+        ext = "md" if fmt == "md" else "json"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить паспорт", "", f"Паспорт (*.{ext})")
+        if not path:
+            return
+        content = exporters.export_markdown(self.schema) if fmt == "md" \
+            else exporters.export_json(self.schema)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        self.statusBar().showMessage(f"Паспорт сохранён: {path}", 4000)
+
+    def _generate_ddl(self, dialect: str) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, f"schema.sql ({dialect})", f"schema_{dialect}.sql", "SQL (*.sql)")
+        if not path:
+            return
+        sql = generate_ddl(self.schema, dialect, self.ddl_opts)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(sql)
+        self.statusBar().showMessage(f"DDL сохранён: {path}", 4000)
+
+    def _set_database(self) -> None:
+        name, ok = QInputDialog.getText(self, "Имя базы данных",
+                                        "База:", text=self.ddl_opts.database)
+        if ok and name:
+            self.ddl_opts.database = name
+
+    def _open_integrations(self) -> None:
+        IntegrationsDialog(lambda: self.schema, lambda: self.ddl_opts, self).exec()
 
     # ------------------------------------------------------------- file ops
     def open_file(self) -> None:

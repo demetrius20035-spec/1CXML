@@ -1,0 +1,6 @@
+# Опциональные драйверы для вкладки «Интеграции».
+# Ставьте только то, что используете — редактор работает и без них.
+PyMySQL>=1.1          # MariaDB / MySQL
+clickhouse-connect>=0.7  # Yandex Cloud Managed ClickHouse
+ydb>=3.0              # Yandex Cloud Managed YDB
+boto3>=1.34           # Yandex Object Storage (S3)

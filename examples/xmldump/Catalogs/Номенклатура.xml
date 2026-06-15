@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+  <Catalog uuid="00000000-0000-0000-0000-000000000010">
+    <Properties>
+      <Name>Номенклатура</Name>
+      <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Номенклатура</v8:content></v8:item></Synonym>
+      <Hierarchical>true</Hierarchical>
+      <HierarchyType>HierarchyFoldersAndItems</HierarchyType>
+      <CodeLength>11</CodeLength>
+      <CodeType>String</CodeType>
+      <DescriptionLength>150</DescriptionLength>
+    </Properties>
+    <ChildObjects>
+      <Attribute>
+        <Properties>
+          <Name>Артикул</Name>
+          <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Артикул</v8:content></v8:item></Synonym>
+          <Type>
+            <v8:Type>xs:string</v8:Type>
+            <v8:StringQualifiers>
+              <v8:Length>25</v8:Length>
+              <v8:AllowedLength>Variable</v8:AllowedLength>
+            </v8:StringQualifiers>
+          </Type>
+        </Properties>
+      </Attribute>
+      <Attribute>
+        <Properties>
+          <Name>Производитель</Name>
+          <Type>
+            <v8:Type>cfg:CatalogRef.Контрагенты</v8:Type>
+            <v8:Type>cfg:CatalogRef.Бренды</v8:Type>
+          </Type>
+        </Properties>
+      </Attribute>
+      <Attribute>
+        <Properties>
+          <Name>СтавкаНДС</Name>
+          <Type>
+            <v8:Type>cfg:EnumRef.СтавкиНДС</v8:Type>
+          </Type>
+        </Properties>
+      </Attribute>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>
