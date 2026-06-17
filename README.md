@@ -99,6 +99,10 @@ python -m pytest editor/tests -q
   подписью SigV4, прямую вставку в **Managed ClickHouse** (HTTPS, JSONEachRow) и в
   **Managed YDB** (Document API, BatchWriteItem). Раскладка колонок единообразна с
   генератором DDL редактора. См. `1c/README.md`.
+* **Разделение ответственности по таблицам:** таблицы создаёт редактор (DDL для
+  MariaDB/ClickHouse/YDB), а 1С перед прямой выгрузкой только **сверяет** структуру
+  целевых таблиц со схемой (ClickHouse — по `system.columns`, YDB — по
+  `DescribeTable`) и прерывает выгрузку с понятной ошибкой при несоответствии.
 
 ## Реализовано в редакторе (помимо базового)
 
