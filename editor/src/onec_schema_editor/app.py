@@ -15,17 +15,22 @@ from PySide6.QtWidgets import (
 )
 
 from . import estimate as estimate_mod
-from . import exporters, importers, profiles, validate
+from . import exporters, importers, llm_export, profiles, validate
 from .datafile import summarize
 from .diff import diff_schemas
 from .dialogs import DryOutDialog, TypeEditorDialog
+from .filters import NodeFilter, known_object_names
+from .history import (
+    History, SelectionCommand, SubtreeCommand, TypesCommand,
+)
 from .model import DATA_BEARING_KINDS, KIND_TITLES, Schema, SchemaNode, types_label
 from .operations import (
-    SearchOptions, compute_statistics, dryout_keep_subset, dryout_split,
+    SearchOptions, bulk_delete, bulk_set_kind, bulk_set_selected,
+    compute_statistics, dryout_keep_subset, dryout_split,
     find_matches, replace_in_nodes,
 )
 from .sqlgen import DDLOptions, generate_ddl
-from .tree_model import COL_FULLNAME, COL_NAME, SchemaTreeModel
+from .tree_model import COL_FULLNAME, COL_NAME, SchemaFilterProxy, SchemaTreeModel
 from .ui_extra import DataViewerDialog, DiffDialog, GraphDialog
 from .ui_integrations import IntegrationsDialog
 
@@ -38,14 +43,20 @@ class MainWindow(QMainWindow):
 
         self.schema = schema or Schema()
         self.model = SchemaTreeModel(self.schema, self)
+        self.history = History()
+        self.model.history = self.history
+        self.proxy = SchemaFilterProxy(self)
+        self.proxy.setSourceModel(self.model)
         self._matches: list[SchemaNode] = []
         self._match_pos = -1
         self.ddl_opts = DDLOptions()
+        self._refresh_known()
 
         self._build_tree()
         self._build_detail_dock()
         self._build_search_dock()
         self._build_stats_dock()
+        self._build_filter_dock()
         self._build_actions()
         self._build_menu()
         self._update_title()
@@ -54,8 +65,9 @@ class MainWindow(QMainWindow):
     # --------------------------------------------------------------- widgets
     def _build_tree(self) -> None:
         self.tree = QTreeView()
-        self.tree.setModel(self.model)
+        self.tree.setModel(self.proxy)
         self.tree.setSelectionBehavior(QTreeView.SelectRows)
+        self.tree.setSelectionMode(QTreeView.ExtendedSelection)
         self.tree.setUniformRowHeights(True)
         self.tree.setAlternatingRowColors(True)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -167,6 +179,55 @@ class MainWindow(QMainWindow):
         dock.setWidget(w)
         self.addDockWidget(Qt.LeftDockWidgetArea, dock)
 
+    def _build_filter_dock(self) -> None:
+        dock = QDockWidget("Фильтр дерева", self)
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        self.filter_text = QLineEdit()
+        self.filter_text.setPlaceholderText("Текст (имя/синоним/полное имя)…")
+        self.filter_text.returnPressed.connect(self._apply_tree_filter)
+        layout.addWidget(self.filter_text)
+        self.f_only_selected = QCheckBox("Только отмеченные")
+        self.f_only_composite = QCheckBox("Только составные типы")
+        self.f_only_dangling = QCheckBox("Только висячие ссылки")
+        self.f_only_data = QCheckBox("Только объекты/поля данных")
+        for cb in (self.f_only_selected, self.f_only_composite,
+                   self.f_only_dangling, self.f_only_data):
+            layout.addWidget(cb)
+        row = QHBoxLayout()
+        b_apply = QPushButton("Применить")
+        b_clear = QPushButton("Сбросить")
+        b_apply.clicked.connect(self._apply_tree_filter)
+        b_clear.clicked.connect(self._clear_tree_filter)
+        row.addWidget(b_apply)
+        row.addWidget(b_clear)
+        layout.addLayout(row)
+        layout.addStretch()
+        dock.setWidget(w)
+        self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+
+    def _apply_tree_filter(self) -> None:
+        flt = NodeFilter(
+            text=self.filter_text.text(),
+            only_selected=self.f_only_selected.isChecked(),
+            only_composite=self.f_only_composite.isChecked(),
+            only_dangling=self.f_only_dangling.isChecked(),
+            only_with_data=self.f_only_data.isChecked(),
+        )
+        self.proxy.set_filter(flt, self.model.known)
+        if flt.is_active():
+            self.tree.expandAll()
+        else:
+            self.tree.expandToDepth(1)
+
+    def _clear_tree_filter(self) -> None:
+        self.filter_text.clear()
+        for cb in (self.f_only_selected, self.f_only_composite,
+                   self.f_only_dangling, self.f_only_data):
+            cb.setChecked(False)
+        self.proxy.set_filter(None, self.model.known)
+        self.tree.expandToDepth(1)
+
     def _build_actions(self) -> None:
         tb = self.addToolBar("Главная")
         tb.setMovable(False)
@@ -193,6 +254,9 @@ class MainWindow(QMainWindow):
         act("Высушить тип", self._dryout, "Ctrl+D")
         act("Редактировать тип", self._edit_type, "Ctrl+T")
         act("Удалить узел", self._delete_node, "Del")
+        tb.addSeparator()
+        act("Отменить", self._undo, "Ctrl+Z")
+        act("Повторить", self._redo, "Ctrl+Y")
 
     def _build_menu(self) -> None:
         bar = self.menuBar()
@@ -222,6 +286,11 @@ class MainWindow(QMainWindow):
         m_exp.addAction("DDL: MariaDB…", lambda: self._generate_ddl("mariadb"))
         m_exp.addAction("DDL: ClickHouse…", lambda: self._generate_ddl("clickhouse"))
         m_exp.addAction("DDL: YDB…", lambda: self._generate_ddl("ydb"))
+        m_exp.addSeparator()
+        m_exp.addAction("Для LLM: JSON Schema…", lambda: self._export_llm("jsonschema"))
+        m_exp.addAction("Для LLM: Pydantic…", lambda: self._export_llm("pydantic"))
+        m_exp.addAction("Для LLM: SQLAlchemy…", lambda: self._export_llm("sqlalchemy"))
+        m_exp.addAction("Для LLM: dbt schema.yml…", lambda: self._export_llm("dbt"))
 
         m_int = bar.addMenu("Интеграции")
         m_int.addAction("СУБД и Yandex Cloud…", self._open_integrations)
@@ -251,7 +320,9 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка импорта", str(exc))
             return
         self.schema = schema
+        self.history.clear()
         self.model.set_schema(schema)
+        self._refresh_known()
         self.tree.expandToDepth(1)
         self._update_title()
         self._refresh_status()
@@ -276,9 +347,8 @@ class MainWindow(QMainWindow):
             return
         prof = profiles.load_profile(path)
         changed, missing = profiles.apply_profile(self.schema, prof)
-        self.model.set_schema(self.schema)
-        self.tree.expandToDepth(1)
-        self._refresh_status()
+        self.history.clear()  # профиль меняет много галок — сбрасываем историю
+        self._reset_view()
         QMessageBox.information(self, "Профиль применён",
                                 f"Изменено галок: {changed}\nНе найдено в схеме: {missing}")
 
@@ -344,6 +414,25 @@ class MainWindow(QMainWindow):
         if path:
             DataViewerDialog(path, self).exec()
 
+    def _export_llm(self, fmt: str) -> None:
+        builders = {
+            "jsonschema": (llm_export.to_json_schema, "json", "JSON Schema"),
+            "pydantic": (llm_export.to_pydantic, "py", "Pydantic"),
+            "sqlalchemy": (llm_export.to_sqlalchemy, "py", "SQLAlchemy"),
+            "dbt": (llm_export.to_dbt_yaml, "yml", "dbt schema"),
+        }
+        builder, ext, title = builders[fmt]
+        content = builder(self.schema)
+        tokens = llm_export.estimate_tokens(content)
+        path, _ = QFileDialog.getSaveFileName(
+            self, f"Экспорт: {title}", f"schema.{ext}", f"*.{ext}")
+        if not path:
+            return
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        self.statusBar().showMessage(
+            f"{title} сохранён: {path}  (≈ {tokens} токенов)", 6000)
+
     def _export_passport(self, fmt: str) -> None:
         ext = "md" if fmt == "md" else "json"
         path, _ = QFileDialog.getSaveFileName(
@@ -397,7 +486,9 @@ class MainWindow(QMainWindow):
             return
         dlg.close()
         self.schema = schema
+        self.history.clear()
         self.model.set_schema(schema)
+        self._refresh_known()
         self.tree.expandToDepth(1)
         self._update_title()
         self._refresh_status()
@@ -426,12 +517,35 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Сохранено: {path}", 4000)
 
     # ---------------------------------------------------------- node helpers
+    def _node_of(self, proxy_index) -> Optional[SchemaNode]:
+        if not proxy_index.isValid():
+            return None
+        return self.proxy.mapToSource(proxy_index).internalPointer()
+
     def _current_node(self) -> Optional[SchemaNode]:
-        idx = self.tree.currentIndex()
-        return idx.internalPointer() if idx.isValid() else None
+        return self._node_of(self.tree.currentIndex())
+
+    def _selected_nodes(self) -> list[SchemaNode]:
+        seen, result = set(), []
+        for idx in self.tree.selectionModel().selectedRows(0):
+            node = self._node_of(idx)
+            if node is not None and id(node) not in seen:
+                seen.add(id(node))
+                result.append(node)
+        return result
+
+    def _refresh_known(self) -> None:
+        self.model.set_known(known_object_names(self.schema))
+
+    def _reset_view(self) -> None:
+        """Полное обновление модели/дерева (после undo/redo и массовых правок)."""
+        self.model.set_schema(self.schema)
+        self._refresh_known()
+        self.tree.expandToDepth(1)
+        self._refresh_status()
 
     def _on_current_changed(self, current, _previous) -> None:
-        node = current.internalPointer() if current.isValid() else None
+        node = self._node_of(current)
         if not node:
             return
         self.d_name.setText(node.name)
@@ -443,19 +557,26 @@ class MainWindow(QMainWindow):
         self.kind_combo.setCurrentText(node.kind)
 
     def _change_kind(self) -> None:
+        from .history import FieldCommand
         node = self._current_node()
         if not node:
             return
-        node.data["kind"] = self.kind_combo.currentText()
+        old, new = node.kind, self.kind_combo.currentText()
+        if old == new:
+            return
+        node.data["kind"] = new
+        self.history.push(FieldCommand(node, "kind", old, new, "смена вида"))
         self.model.notify_node_changed(node)
 
     def _edit_type(self) -> None:
         node = self._current_node()
         if not node:
             return
+        old_types = [dict(d) for d in node.types]
         dlg = TypeEditorDialog(node, self)
         if dlg.exec():
             node.types = dlg.result_types()
+            self.history.push(TypesCommand(node, old_types, node.types, "изменение типа"))
             self.model.notify_node_changed(node)
             self._on_current_changed(self.tree.currentIndex(), None)
 
@@ -476,42 +597,113 @@ class MainWindow(QMainWindow):
             return
         parent = node.parent
         if dlg.mode() == DryOutDialog.MODE_SPLIT and parent is not None:
-            row = parent.children.index(node)
-            created = dryout_split(self.schema, node, indices)
-            self.model.replace_children(parent, created, row, 1)
+            before = self.schema.snapshot_children(parent)
+            dryout_split(self.schema, node, indices)
+            after = self.schema.snapshot_children(parent)
+            self.history.push(SubtreeCommand(self.schema, parent, before, after, "высушивание (split)"))
+            self._reset_view()
         else:
+            old_types = [dict(d) for d in node.types]
             dryout_keep_subset(node, indices)
+            self.history.push(TypesCommand(node, old_types, node.types, "высушивание"))
             self.model.notify_node_changed(node)
-        self._on_current_changed(self.tree.currentIndex(), None)
+            self._on_current_changed(self.tree.currentIndex(), None)
 
     def _delete_node(self) -> None:
-        node = self._current_node()
-        if not node:
+        from .history import CompositeCommand
+
+        nodes = self._selected_nodes() or ([self._current_node()] if self._current_node() else [])
+        nodes = [n for n in nodes if n is not None and n.parent is not None]
+        if not nodes:
             return
+        подпись = nodes[0].name if len(nodes) == 1 else f"{len(nodes)} узлов"
         if QMessageBox.question(
                 self, "Удаление",
-                f"Удалить узел «{node.name}» и всё его поддерево?") != QMessageBox.Yes:
+                f"Удалить «{подпись}» вместе с поддеревом?") != QMessageBox.Yes:
             return
-        self.model.remove_node(node)
-        self._refresh_status()
+        # снимок затронутых родителей до удаления
+        parents = []
+        seen = set()
+        for n in nodes:
+            if id(n.parent) not in seen:
+                seen.add(id(n.parent))
+                parents.append(n.parent)
+        before = {id(p): (p, self.schema.snapshot_children(p)) for p in parents}
+        bulk_delete(self.schema, nodes)
+        commands = []
+        for p in parents:
+            after = self.schema.snapshot_children(p)
+            commands.append(SubtreeCommand(self.schema, p, before[id(p)][1], after, "удаление"))
+        self.history.push(CompositeCommand(commands, "удаление"))
+        self._reset_view()
+
+    def _undo(self) -> None:
+        cmd = self.history.undo()
+        if cmd:
+            self._reset_view()
+            self.statusBar().showMessage("Отменено: " + cmd.label, 3000)
+
+    def _redo(self) -> None:
+        cmd = self.history.redo()
+        if cmd:
+            self._reset_view()
+            self.statusBar().showMessage("Повторено: " + cmd.label, 3000)
 
     # -------------------------------------------------------------- bulk sel
+    def _apply_selection(self, targets, value: bool, label: str) -> None:
+        changes = [(n, n.selected, value) for n in targets if n.selected != value]
+        if not changes:
+            return
+        for n, _old, _new in changes:
+            n.selected = value
+        self.history.push(SelectionCommand(changes, label))
+        self._reset_view()
+
     def _bulk_select(self, value: bool) -> None:
-        for node in self.schema.all_nodes():
-            node.selected = value
-        self.model.set_schema(self.schema)
-        self.tree.expandToDepth(1)
-        self._refresh_status()
+        self._apply_selection(list(self.schema.all_nodes()), value, "массовая галка")
 
     def _select_data_only(self) -> None:
+        on, off = [], []
         for node in self.schema.all_nodes():
-            on_data_branch = node.kind in DATA_BEARING_KINDS or node.is_field \
+            data_branch = node.kind in DATA_BEARING_KINDS or node.is_field \
                 or node.kind in ("TabularSection", "StandardTabularSection") \
                 or node.kind in ("ConfigRoot", "MetadataClass")
-            node.selected = on_data_branch
-        self.model.set_schema(self.schema)
-        self.tree.expandToDepth(1)
-        self._refresh_status()
+            (on if data_branch else off).append(node)
+        changes = [(n, n.selected, True) for n in on if not n.selected]
+        changes += [(n, n.selected, False) for n in off if n.selected]
+        for n, _o, new in changes:
+            n.selected = new
+        if changes:
+            self.history.push(SelectionCommand(changes, "только с данными"))
+        self._reset_view()
+
+    def _bulk_selected_nodes(self, value: bool) -> None:
+        nodes = self._selected_nodes()
+        if not nodes:
+            return
+        targets = []
+        for n in nodes:
+            targets.append(n)
+            targets.extend(n.iter_descendants())
+        self._apply_selection(targets, value, "галка выделенных")
+
+    def _bulk_kind_selected(self) -> None:
+        from .history import FieldCommand, CompositeCommand
+        nodes = self._selected_nodes()
+        if not nodes:
+            return
+        kind, ok = QInputDialog.getItem(self, "Сменить вид", "Новый вид:",
+                                        sorted(KIND_TITLES.keys()), editable=False)
+        if not ok or not kind:
+            return
+        cmds = []
+        for n in nodes:
+            if n.kind != kind:
+                cmds.append(FieldCommand(n, "kind", n.kind, kind, "смена вида"))
+                n.data["kind"] = kind
+        if cmds:
+            self.history.push(CompositeCommand(cmds, "смена вида выделенных"))
+        self._reset_view()
 
     # ----------------------------------------------------------- search ops
     def _current_options(self) -> SearchOptions:
@@ -549,7 +741,7 @@ class MainWindow(QMainWindow):
         self._reveal(self._matches[self._match_pos])
 
     def _reveal(self, node: SchemaNode) -> None:
-        idx = self.model.index_for_node(node, COL_NAME)
+        idx = self.proxy.mapFromSource(self.model.index_for_node(node, COL_NAME))
         self.tree.scrollTo(idx)
         self.tree.setCurrentIndex(idx)
         self.search_status.setText(
@@ -558,11 +750,7 @@ class MainWindow(QMainWindow):
     def _set_matches_selected(self, value: bool) -> None:
         if not self._matches:
             self._find_all()
-        for node in self._matches:
-            node.selected = value
-        self.model.set_schema(self.schema)
-        self.tree.expandToDepth(1)
-        self._refresh_status()
+        self._apply_selection(list(self._matches), value, "галка найденных")
 
     def _replace_all(self) -> None:
         if not self._matches:
@@ -571,8 +759,7 @@ class MainWindow(QMainWindow):
             return
         opts = self._current_options()
         count = replace_in_nodes(self._matches, opts, self.replace_edit.text())
-        self.model.set_schema(self.schema)
-        self.tree.expandToDepth(1)
+        self._reset_view()
         self.search_status.setText(f"Заменено вхождений: {count}")
 
     # ---------------------------------------------------------- context menu
@@ -580,7 +767,18 @@ class MainWindow(QMainWindow):
         node = self._current_node()
         if not node:
             return
+        selected = self._selected_nodes()
         menu = QMenu(self)
+        if len(selected) > 1:
+            menu.addAction(f"Отметить выделенные ({len(selected)})",
+                           lambda: self._bulk_selected_nodes(True))
+            menu.addAction("Снять с выделенных",
+                           lambda: self._bulk_selected_nodes(False))
+            menu.addAction("Сменить вид у выделенных…", self._bulk_kind_selected)
+            menu.addSeparator()
+            menu.addAction(f"Удалить выделенные ({len(selected)})", self._delete_node)
+            menu.exec(self.tree.viewport().mapToGlobal(pos))
+            return
         menu.addAction("Редактировать тип", self._edit_type)
         if node.is_composite:
             menu.addAction("Высушить составной тип", self._dryout)
@@ -597,12 +795,8 @@ class MainWindow(QMainWindow):
         self.kind_combo.showPopup()
 
     def _set_subtree(self, node: SchemaNode, value: bool) -> None:
-        node.selected = value
-        for desc in node.iter_descendants():
-            desc.selected = value
-        self.model.set_schema(self.schema)
-        self.tree.expandToDepth(1)
-        self._refresh_status()
+        targets = [node] + list(node.iter_descendants())
+        self._apply_selection(targets, value, "галка поддерева")
 
     # -------------------------------------------------------------- statuses
     def _update_title(self) -> None:

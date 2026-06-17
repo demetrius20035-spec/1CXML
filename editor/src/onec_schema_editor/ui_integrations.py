@@ -126,7 +126,12 @@ class _SqlTab(_BaseTab):
         b_test.clicked.connect(self._test)
         b_ddl.clicked.connect(self._create_tables)
         b_load.clicked.connect(self._load)
-        for b in (b_test, b_ddl, b_load):
+        buttons = [b_test, b_ddl, b_load]
+        if self.dialect in ("mariadb", "clickhouse"):
+            b_cmp = QPushButton("Сверить схему с БД")
+            b_cmp.clicked.connect(self._compare_schema)
+            buttons.append(b_cmp)
+        for b in buttons:
             btn_row.addWidget(b)
         av.addLayout(btn_row)
         layout.addWidget(actions)
@@ -243,6 +248,29 @@ class _SqlTab(_BaseTab):
             skipped = (", пропущено объектов: " + str(len(result.skipped_objects))) \
                 if result.skipped_objects else ""
             return f"Загружено строк: {result.rows}{skipped}"
+        self._run(job)
+
+    def _compare_schema(self):
+        schema = self.get_schema()
+        opts = self.get_opts()
+        cfg = self._config()
+        dialect = self.dialect
+
+        def job(worker):
+            from .. import dbcompare
+            if dialect == "clickhouse":
+                actual = dbcompare.introspect_clickhouse(cfg)
+            else:
+                actual = dbcompare.introspect_mariadb(cfg)
+            rep = dbcompare.compare(schema, actual, opts)
+            lines = [rep.summary()]
+            for t in rep.missing_tables:
+                lines.append("  ✖ нет таблицы: " + t)
+            for t, c in rep.missing_columns:
+                lines.append(f"  ✖ нет колонки: {t}.{c}")
+            for t, c, exp, act in rep.type_mismatches:
+                lines.append(f"  ⚠ тип {t}.{c}: ожидалось «{exp}», в БД «{act}»")
+            return "\n".join(lines)
         self._run(job)
 
 

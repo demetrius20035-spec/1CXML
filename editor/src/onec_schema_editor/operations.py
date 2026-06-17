@@ -190,6 +190,53 @@ def dryout_split(schema: Schema, node: SchemaNode, split_indices: list[int]) -> 
     return created
 
 
+# ---------------------------------------------------------------------------
+# Массовые операции над выделенными узлами
+# ---------------------------------------------------------------------------
+
+def bulk_set_selected(nodes: list[SchemaNode], value: bool, cascade: bool = True) -> int:
+    """Ставит/снимает галку у узлов (с каскадом на поддерево)."""
+    count = 0
+    for node in nodes:
+        if node.selected != value:
+            node.selected = value
+            count += 1
+        if cascade:
+            for desc in node.iter_descendants():
+                if desc.selected != value:
+                    desc.selected = value
+                    count += 1
+    return count
+
+
+def bulk_set_kind(nodes: list[SchemaNode], kind: str) -> int:
+    count = 0
+    for node in nodes:
+        if node.kind != kind:
+            node.data["kind"] = kind
+            count += 1
+    return count
+
+
+def bulk_delete(schema: Schema, nodes: list[SchemaNode]) -> list[SchemaNode]:
+    """Удаляет узлы; если выбран и предок, и потомок — потомок отсекается вместе
+    с предком (без двойного удаления). Возвращает фактически удалённые корни."""
+    ids = {n.id for n in nodes}
+
+    def has_selected_ancestor(node: SchemaNode) -> bool:
+        p = node.parent
+        while p is not None:
+            if p.id in ids:
+                return True
+            p = p.parent
+        return False
+
+    roots = [n for n in nodes if not has_selected_ancestor(n)]
+    for node in roots:
+        schema.remove_node(node)
+    return roots
+
+
 def _type_suffix(desc: dict) -> str:
     if desc.get("t") in ("Ref", "EnumRef"):
         meta = desc.get("meta", "")

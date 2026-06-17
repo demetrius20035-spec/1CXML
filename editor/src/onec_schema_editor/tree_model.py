@@ -11,9 +11,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QAbstractItemModel, QModelIndex, Qt
+from PySide6.QtCore import QAbstractItemModel, QModelIndex, QSortFilterProxyModel, Qt
 from PySide6.QtGui import QBrush, QColor, QFont
 
+from . import history as history_mod
+from .filters import NodeFilter, node_badges
 from .model import Schema, SchemaNode, types_label
 
 COL_NAME = 0
@@ -48,12 +50,17 @@ class SchemaTreeModel(QAbstractItemModel):
     def __init__(self, schema: Schema, parent=None):
         super().__init__(parent)
         self.schema = schema
+        self.history = None          # опциональный History для undo/redo
+        self.known: set[str] = set()  # известные объекты (для бейджей)
 
     # -------------------------------------------------------- basic plumbing
     def set_schema(self, schema: Schema) -> None:
         self.beginResetModel()
         self.schema = schema
         self.endResetModel()
+
+    def set_known(self, known: set[str]) -> None:
+        self.known = known
 
     def columnCount(self, parent=QModelIndex()) -> int:
         return len(COLUMNS)
@@ -137,6 +144,13 @@ class SchemaTreeModel(QAbstractItemModel):
         if role == Qt.ForegroundRole and col == COL_TYPE and node.is_composite:
             return QBrush(QColor("#c62828"))
 
+        if role == Qt.BackgroundRole and col == COL_NAME:
+            badges = node_badges(node, self.known)
+            if "dangling" in badges:
+                return QBrush(QColor("#ffebee"))   # висячая ссылка — светло-красный
+            if "no-fields" in badges:
+                return QBrush(QColor("#fff8e1"))   # нет отмеченных полей — светло-жёлтый
+
         if role == Qt.FontRole and col == COL_NAME:
             if node.kind in ("ConfigRoot", "MetadataClass") or node.kind in (
                 "Catalog", "Document", "InformationRegister",
@@ -169,6 +183,10 @@ class SchemaTreeModel(QAbstractItemModel):
 
         if role == Qt.CheckStateRole and col == COL_NAME:
             checked = Qt.CheckState(value) == Qt.Checked
+            if self.history is not None:
+                affected = [node] + list(node.iter_descendants())
+                changes = [(n, n.selected, checked) for n in affected]
+                self.history.push(history_mod.SelectionCommand(changes, "галка"))
             self._set_selected_recursive(node, checked)
             top = self.index_for_node(node, 0)
             self.dataChanged.emit(top, self.index_for_node(node, COL_FULLNAME))
@@ -178,11 +196,15 @@ class SchemaTreeModel(QAbstractItemModel):
 
         if role == Qt.EditRole:
             if col == COL_NAME and value:
-                node.name = str(value)
+                attr, new = "name", str(value)
             elif col == COL_SYNONYM:
-                node.synonym = str(value)
+                attr, new = "synonym", str(value)
             else:
                 return False
+            old = node.data.get(attr, "")
+            node.data[attr] = new
+            if self.history is not None:
+                self.history.push(history_mod.FieldCommand(node, attr, old, new, "переименование"))
             self.dataChanged.emit(index, index)
             return True
         return False
@@ -247,3 +269,35 @@ class SchemaTreeModel(QAbstractItemModel):
         if new_children:
             self.beginInsertRows(parent_index, start_row, start_row + len(new_children) - 1)
             self.endInsertRows()
+
+
+class SchemaFilterProxy(QSortFilterProxyModel):
+    """Фильтрация дерева: узел виден, если сам подходит под фильтр либо подходит
+    кто-то из потомков (чтобы сохранить путь к совпадениям)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._filter: NodeFilter | None = None
+        self._known: set[str] = set()
+
+    def set_filter(self, node_filter: NodeFilter | None, known: set[str]) -> None:
+        self._filter = node_filter
+        self._known = known
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, row: int, parent: QModelIndex) -> bool:
+        if self._filter is None or not self._filter.is_active():
+            return True
+        src = self.sourceModel()
+        idx = src.index(row, 0, parent)
+        if not idx.isValid():
+            return True
+        return self._accept(idx.internalPointer())
+
+    def _accept(self, node: SchemaNode) -> bool:
+        if self._filter.matches(node, self._known):
+            return True
+        for child in node.children:
+            if self._accept(child):
+                return True
+        return False

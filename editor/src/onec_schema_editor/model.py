@@ -250,6 +250,36 @@ class Schema:
         elif node in self.roots:
             self.roots.remove(node)
 
+    def snapshot_children(self, parent: SchemaNode) -> list:
+        """Глубокий снимок детей узла (для undo/redo структурных операций)."""
+        import copy
+
+        def ser(node: SchemaNode) -> dict:
+            return {"data": copy.deepcopy(node.data),
+                    "children": [ser(c) for c in node.children]}
+
+        return [ser(c) for c in parent.children]
+
+    def restore_children(self, parent: SchemaNode, snapshot: list) -> None:
+        """Восстанавливает детей узла из снимка, синхронизируя nodes_by_id."""
+        for child in list(parent.children):
+            for desc in [child] + list(child.iter_descendants()):
+                self.nodes_by_id.pop(desc.id, None)
+        parent.children = []
+
+        def build(item: dict, par: SchemaNode) -> SchemaNode:
+            node = SchemaNode(item["data"])
+            node.parent = par
+            node.parent_id = par.id
+            self.nodes_by_id[node.id] = node
+            self.max_id = max(self.max_id, node.id)
+            for ch in item["children"]:
+                node.children.append(build(ch, node))
+            return node
+
+        for item in snapshot:
+            parent.children.append(build(item, parent))
+
     def add_child(self, parent: SchemaNode, data: dict, index: Optional[int] = None) -> SchemaNode:
         data.setdefault("id", self.new_id())
         data["parent"] = parent.id
